@@ -1,4 +1,4 @@
-name: astrbot_plugin_opencode_session_header
+name: opencode_session_header
 display_name: OpenCode 会话请求头注入
 short_desc: 为 OpenCode 请求自动注入 x-opencode-session，覆盖全部 Go 模型与四类 Provider。
 author: sIleNtot

@@ -32,7 +32,7 @@ OpenCode 网关要求每个请求携带稳定且可见的 `x-opencode-session` �
 ## 安装
 
 1. **插件市场**：在 AstrBot 插件市场搜索「OpenCode 会话请求头注入」安装；
-2. **手动安装**：将本仓库整个目录放入 AstrBot 的 `data/plugins/astrbot_plugin_opencode_session_header`；
+2. **手动安装**：将本仓库整个目录放入 AstrBot 的 `data/plugins/opencode_session_header`；
 3. 重载插件或重启 AstrBot。
 
 运行时无需额外安装第三方 Python 依赖：`httpx`、`httpx2`、`openai`、`anthropic`、`google-genai` 均由 AstrBot 环境自带。
