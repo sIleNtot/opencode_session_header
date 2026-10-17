@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import contextvars
+import functools
 import hashlib
+import importlib
+import inspect
+import types
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
@@ -377,3 +381,114 @@ class InjectionEngine:
         """按 ``log_skip`` 开关记录跳过原因。"""
         if self._log_skip_enabled:
             self._log("info", f"已跳过注入：{reason} (url={url})")
+
+    def install_hooks(self) -> list[str]:
+        """挂载 httpx / httpx2 传输钩子，返回已挂载的标签列表（幂等）。
+
+        对每个发现到的传输模块，依次处理 ``AsyncClient`` / ``Client`` 的
+        ``send``；类对象按 ``id`` 去重（跨模块共享）。``send`` 不可调用的
+        类跳过；已带 ``HOOK_MARKER`` 的 ``send`` 只记账、不再包装，保证
+        二次安装不叠加包装层。
+        """
+        records: list[tuple[type, object, object]] = list(
+            getattr(self, "_hooked", [])
+        )
+        labels: list[str] = list(getattr(self, "_hooked_labels", []))
+        seen: set[int] = set()
+        for label, module in discover_transport_modules():
+            for cls_name in ("AsyncClient", "Client"):
+                cls = getattr(module, cls_name, None)
+                if not isinstance(cls, type) or id(cls) in seen:
+                    continue
+                seen.add(id(cls))
+                original = getattr(cls, "send", None)
+                if not callable(original):
+                    continue
+                entry = f"{label}.{cls_name}.send"
+                if getattr(original, HOOK_MARKER, False):
+                    # 已被本插件包装（如本引擎二次安装）：不叠加第二层
+                    records.append((cls, original, original))
+                else:
+                    wrapped = self._make_send_wrapper(
+                        original, is_async=inspect.iscoroutinefunction(original)
+                    )
+                    cls.send = wrapped
+                    records.append((cls, original, wrapped))
+                if entry not in labels:
+                    labels.append(entry)
+        self._hooked = records
+        self._hooked_labels = labels
+        return list(labels)
+
+    def uninstall_hooks(self) -> None:
+        """逆序还原已挂载的 ``send`` 包装，并清空记录与标签。
+
+        仅当类上的 ``send`` 仍是本条记录写入的包装对象时才还原，
+        避免误伤被其它代码替换过的 ``send``。
+        """
+        for cls, original, wrapped in reversed(getattr(self, "_hooked", [])):
+            if getattr(cls, "send", None) is wrapped:
+                cls.send = original
+        self._hooked = []
+        self._hooked_labels = []
+
+    @property
+    def hooked_labels(self) -> list[str]:
+        """当前已挂载的传输钩子标签（未安装或已还原时为空列表）。"""
+        return list(getattr(self, "_hooked_labels", []))
+
+    def _make_send_wrapper(self, original, *, is_async: bool):
+        """生成透明 ``send`` 包装器：先注入再原样转发，并打上 ``HOOK_MARKER``。"""
+        engine = self
+        if is_async:
+            @functools.wraps(original)
+            async def wrapped(client_self, request, *args, **kwargs):
+                engine.inject_request(request)
+                return await original(client_self, request, *args, **kwargs)
+        else:
+            @functools.wraps(original)
+            def wrapped(client_self, request, *args, **kwargs):
+                engine.inject_request(request)
+                return original(client_self, request, *args, **kwargs)
+        setattr(wrapped, HOOK_MARKER, True)
+        return wrapped
+
+
+# ---------------------------------------------------------------------------
+# 传输钩子：httpx / httpx2 模块发现
+# ---------------------------------------------------------------------------
+def discover_transport_modules() -> list[tuple[str, types.ModuleType]]:
+    """发现可挂钩的传输模块，返回 ``[(标签, 模块)]``。
+
+    候选顺序：顶层 ``httpx``、顶层 ``httpx2``、``openai._base_client`` 与
+    ``anthropic._base_client`` 的 ``httpx`` / ``httpx2`` 属性。逐个用
+    ``importlib.import_module`` 尝试，导入失败一律跳过；``None``、非模块
+    对象、同时缺少 ``Client`` 与 ``AsyncClient`` 属性的候选同样跳过；
+    按模块对象 ``id`` 去重（先到先得）。
+    """
+    candidates: tuple[tuple[str, str, str | None], ...] = (
+        ("httpx", "httpx", None),
+        ("httpx2", "httpx2", None),
+        ("openai._base_client.httpx", "openai._base_client", "httpx"),
+        ("openai._base_client.httpx2", "openai._base_client", "httpx2"),
+        ("anthropic._base_client.httpx", "anthropic._base_client", "httpx"),
+        ("anthropic._base_client.httpx2", "anthropic._base_client", "httpx2"),
+    )
+    found: list[tuple[str, types.ModuleType]] = []
+    seen: set[int] = set()
+    for label, module_name, attr in candidates:
+        try:
+            module: object = importlib.import_module(module_name)
+        except Exception:  # noqa: BLE001 - 可选依赖，导入失败一律跳过
+            module = None
+        if attr is not None:
+            module = getattr(module, attr, None)
+        if not isinstance(module, types.ModuleType):
+            continue
+        if not (hasattr(module, "Client") or hasattr(module, "AsyncClient")):
+            continue
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        found.append((label, module))
+    return found
