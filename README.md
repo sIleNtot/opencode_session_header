@@ -134,10 +134,10 @@ CI（GitHub Actions）在 Python 3.12 上执行同样的 `ruff check .`。
 - **配置项**：移除 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid`，改为 `target_hosts`、`target_path_prefixes`、`fixed_session_id` 等九项（见配置表）；
 - **CI**：新增 GitHub Actions 工作流（ruff 静态检查）。
 
-## 从 1.x 升级
+## 从上游原版插件迁移
 
-1.x 的配置键 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid` 在 2.x 中不再读取（旧键会留在配置文件中但被忽略），请按「配置表」更新：`target_endpoint` + `ignore_trailing_slash` 改用 `target_hosts` + `target_path_prefixes` 表达（默认值即覆盖原单端点，通常无需额外配置）；`fixed_session_uuid` 请把固定值迁移到 `fixed_session_id`。
+上游原版（1.x）的配置键 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid` 在本插件中不再读取（旧键会留在配置文件中但被忽略），请按「配置表」更新：`target_endpoint` + `ignore_trailing_slash` 改用 `target_hosts` + `target_path_prefixes` 表达（默认值即覆盖原单端点，通常无需额外配置）；`fixed_session_uuid` 请把固定值迁移到 `fixed_session_id`。
 
-只配置过 `fixed_session_uuid` 的用户在 2.x 下 `fixed_session_id` 为空，固定兜底会话不再生效：若 `missing_session_mode` 仍为 `fixed`，插件加载时会输出「fixed_session_id 为空或含不可见字符，已降级为 random」警告并回退随机兜底（每次重启更换会话值）；请务必更新配置。
+只配置过 `fixed_session_uuid` 的用户 `fixed_session_id` 为空，固定兜底会话不再生效：若 `missing_session_mode` 仍为 `fixed`，插件加载时会输出「fixed_session_id 为空或含不可见字符，已降级为 random」警告并回退随机兜底（每次重启更换会话值）；请务必更新配置。
 
 致谢：本插件基于上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header) 重构而来，感谢原作者的开拓工作。
