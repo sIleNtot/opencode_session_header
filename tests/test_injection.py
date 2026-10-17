@@ -16,6 +16,7 @@ RANDOM = "ses_" + "r" * 32
 FIXED = "ses_" + "f" * 32
 MATCH_URL = "https://opencode.ai/zen/go/v1/messages"
 OTHER_URL = "https://api.openai.com/v1/chat/completions"
+NEAR_MISS_URL = "https://opencode.ai/console/billing"  # 主机命中、路径未命中
 HOSTS, PREFIXES = ("opencode.ai",), ("/zen", "/inference")
 
 
@@ -257,9 +258,77 @@ def test_engine_logs_skip_reasons():
     assert "插件已禁用" in recorder.calls[0][1]
 
     recorder.calls.clear()
-    make_engine(logger=recorder).inject_request(FakeRequest(OTHER_URL))
+    # R5：仅目标主机的请求记录跳过日志，端点不匹配用「命中主机但路径不符」的近失请求验证
+    make_engine(logger=recorder).inject_request(FakeRequest(NEAR_MISS_URL))
     assert [level for level, _ in recorder.calls] == ["info"]
     assert "端点不匹配" in recorder.calls[0][1]
+
+
+# ---------------------------------------------------------------------------
+# EndpointMatcher.host_matches：跳过日志门控所依赖的仅主机判定
+# ---------------------------------------------------------------------------
+def test_host_matches_follows_same_rules_as_matches():
+    matcher = EndpointMatcher(HOSTS, PREFIXES)
+
+    assert matcher.host_matches("https://opencode.ai/zen/go") is True
+    assert matcher.host_matches("https://api.opencode.ai/any/path") is True  # 点后缀子域
+    assert matcher.host_matches("HTTPS://OPENCODE.AI:8443/zen") is True  # 主机归一化
+    assert matcher.host_matches(OTHER_URL) is False
+    assert matcher.host_matches("https://xopencode.ai/zen") is False  # 非子域后缀
+    assert matcher.host_matches("/zen/go") is False  # 相对路径无主机
+    assert matcher.host_matches("http://[::1") is False  # 畸形 URL 绝不抛出
+
+
+# ---------------------------------------------------------------------------
+# 跳过日志的主机门控（R5）：仅目标主机的请求才可能产生跳过日志
+# ---------------------------------------------------------------------------
+def test_skip_log_silent_for_unrelated_host():
+    """非目标主机（如 api.openai.com）即使 log_skip=True 也不产生任何日志。"""
+    recorder = RecordingLogger()
+    engine = make_engine(logger=recorder)  # log_skip 默认 True
+
+    engine.inject_request(FakeRequest(OTHER_URL))
+
+    assert recorder.calls == []
+
+
+def test_skip_log_fires_once_for_host_hit_path_miss():
+    """目标主机 + 路径未命中 → 恰好一条「端点不匹配」跳过日志。"""
+    recorder = RecordingLogger()
+    engine = make_engine(logger=recorder)
+
+    engine.inject_request(FakeRequest(NEAR_MISS_URL))
+
+    assert len(recorder.calls) == 1
+    level, message = recorder.calls[0]
+    assert level == "info"
+    assert f"已跳过注入：端点不匹配 (url={NEAR_MISS_URL})" in message
+
+
+def test_disabled_skip_log_only_for_target_host():
+    """禁用时非目标主机静默；目标主机恰好一条「插件已禁用」日志。"""
+    recorder = RecordingLogger()
+    engine = make_engine(enable=False, logger=recorder)
+
+    engine.inject_request(FakeRequest(OTHER_URL))
+    assert recorder.calls == []
+
+    engine.inject_request(FakeRequest(MATCH_URL))
+    assert len(recorder.calls) == 1
+    level, message = recorder.calls[0]
+    assert level == "info"
+    assert f"已跳过注入：插件已禁用 (url={MATCH_URL})" in message
+
+
+def test_disabled_skip_log_fires_even_when_path_miss():
+    """禁用时只要求主机命中：路径未命中也记录「插件已禁用」。"""
+    recorder = RecordingLogger()
+    engine = make_engine(enable=False, logger=recorder)
+
+    engine.inject_request(FakeRequest(NEAR_MISS_URL))
+
+    assert len(recorder.calls) == 1
+    assert "插件已禁用" in recorder.calls[0][1]
 
 
 def test_engine_respects_log_switches():

@@ -24,7 +24,7 @@ OpenCode 网关要求每个请求携带稳定且可见的 `x-opencode-session` �
 
 不变式（任何情况下都成立）：
 
-- **已有非空会话头绝不覆盖**：请求若已携带（例如你自己在 Provider 的 `custom_headers` 中配过），原值优先，镜像头也会与之一致；
+- **已有非空会话头绝不覆盖**：请求若已携带（例如你自己在 Provider 的 `custom_headers` 中配过），原值优先，插件填充的镜像头也会与之一致（你已自设的非空镜像头除外，见「会话 ID 设计」）；
 - **非目标端点零影响**：OpenAI、DeepSeek、Ollama 等其它 API 的请求原样抵达，不产生任何副作用；
 - **UA 不改写**：保留 AstrBot 自身的 `astrbot/<版本>`，不伪造 OpenCode 客户端身份；
 - **全量容错**：注入路径中的任何异常只记日志，绝不抛出，绝不影响请求本身。
@@ -64,7 +64,7 @@ OpenCode 网关要求每个请求携带稳定且可见的 `x-opencode-session` �
 | `missing_session_mode` | string | `random` | 缺少会话上下文时的兜底方式：`random` 或 `fixed`；取值非法自动降级 `random`。 |
 | `fixed_session_id` | string | `""` | `fixed` 模式使用的固定会话值，仅允许可见 ASCII；留空或非法自动降级 `random`。 |
 | `log_injection` | bool | `true` | 注入成功时记录一条 INFO 日志。 |
-| `log_skip` | bool | `true` | 跳过注入（禁用或不匹配）时记录一条 INFO 日志；请求频繁时可关闭以减少日志量。 |
+| `log_skip` | bool | `true` | 仅当请求命中目标主机（`target_hosts`）但未注入时记录一条 INFO 日志说明原因（禁用或不匹配）；其它主机的请求不产生日志。 |
 
 关于兜底语义：只要存在对话上下文（如 `req.conversation.cid`），会话 ID 永远按上下文确定性推导，兜底配置不参与。`random` 会在插件加载时生成一个 `ses_` 随机会话，并在本次进程内复用（重启或重载后更换）；`fixed` 则使用 `fixed_session_id` 的值，适合希望兜底会话跨重启保持不变的场景。修改配置后重载插件即可生效。
 
@@ -73,7 +73,7 @@ OpenCode 网关要求每个请求携带稳定且可见的 `x-opencode-session` �
 - **格式**：`ses_` + 32 位小写十六进制，对齐 OpenCode Desktop 的会话 ID 约定；每个 AstrBot 对话恒定、跨重启稳定，对话重置（新 cid）即自动换新。
 - **推导**：优先取 `req.conversation.cid`（AstrBot 对话 UUID），取不到时依次回退 `unified_msg_origin` 与 `req.session_id`。来源是合法 UUID 时直接取其去连字符的十六进制（`550e8400-e29b-41d4-a716-446655440000` → `ses_550e8400e29b41d4a716446655440000`）；其它来源字符串取 sha256 前 32 位十六进制，同样稳定可复现。
 - **与 OpenCode Desktop 的对应关系**：Desktop 同样以 `ses_` 开头的会话 ID 标识会话；本插件生成的值与其同格式、同语义（对每个会话稳定、仅可见 ASCII），网关据此完成路由与提示缓存。
-- **不覆盖用户自配值**：请求已带非空 `x-opencode-session` 时以原值为准，镜像头集也与该值保持一致，不会出现头与头不一致。
+- **不覆盖用户自配值**：请求已带非空 `x-opencode-session` 时以原值为准，插件填充的镜像头与该值保持一致；但已由调用方设置的非空镜像头同样被保留 —— 若你把某个镜像头设成了与主头不同的值，两者会按你设置的值保持不同，插件不会强行对齐。
 - **镜像头集**（`mirror_opencode_headers = true` 时）：`x-opencode-session-id`、`x-session-affinity`、`X-Session-Id` 取值与主头一致；`x-opencode-client` 固定为 `astrbot`；已由调用方设置的非空镜像头不覆盖。
 - **缓存**：来源 → 会话 ID 的纯函数结果在进程内缓存（上限 4096 条），仅内存、不落盘。
 
@@ -97,7 +97,7 @@ x-opencode-session: ses_550e8400e29b41d4a716446655440000
 
 1. 用 `/oc-session` 查看「启用状态」与「匹配规则」，确认插件已加载、URL 确实命中；
 2. 开启 `log_injection` / `log_skip`，从日志里确认真实请求 URL —— 只要它位于 `opencode.ai` 下的 `/zen` 或 `/inference` 路径，就应能看到注入日志；
-3. 若你曾在 Provider 的 `custom_headers` 中配过不合法（空值、含空格等）的 `x-opencode-session`，它会优先于插件推导值 —— 清空自配值即可让插件接管。
+3. 若你曾在 Provider 的 `custom_headers` 中配过非空的 `x-opencode-session`（例如从别处复制的、与当前会话不符的值），它会优先于插件推导值；空值或纯空白会被视为未设置，插件照常注入 —— 若自配值不正确，清空它即可让插件接管。
 
 **Q：为什么必须装这个插件？**
 
@@ -137,5 +137,11 @@ python -m venv .venv
 - **代码结构**：新增零 AstrBot 依赖的 `core.py`（端点匹配、会话推导、注入引擎、传输钩子均可独立测试），`main.py` 收敛为薄胶水层；
 - **配置项**：移除 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid`，改为 `target_hosts`、`target_path_prefixes`、`fixed_session_id` 等九项（见配置表）；
 - **测试与 CI**：新增 `tests/` 单元测试与 GitHub Actions（ruff + pytest）。
+
+## 从 1.x 升级
+
+1.x 的配置键 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid` 在 2.x 中不再读取（旧键会留在配置文件中但被忽略），请按「配置表」更新：`target_endpoint` + `ignore_trailing_slash` 改用 `target_hosts` + `target_path_prefixes` 表达（默认值即覆盖原单端点，通常无需额外配置）；`fixed_session_uuid` 请把固定值迁移到 `fixed_session_id`。
+
+只配置过 `fixed_session_uuid` 的用户在 2.x 下 `fixed_session_id` 为空，固定兜底会话不再生效：若 `missing_session_mode` 仍为 `fixed`，插件加载时会输出「fixed_session_id 为空或含不可见字符，已降级为 random」警告并回退随机兜底（每次重启更换会话值）；请务必更新配置。
 
 致谢：本插件基于上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header) 重构而来，感谢原作者的开拓工作。

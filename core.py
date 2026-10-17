@@ -152,23 +152,32 @@ class EndpointMatcher:
                 if prefix and prefix != "/" and prefix not in self._path_prefixes:
                     self._path_prefixes.append(prefix)
 
-    def matches(self, url: str) -> bool:
-        """主机命中（完全相等或点后缀子域）且路径命中任一前缀时为 True。
+    def host_matches(self, url: str) -> bool:
+        """仅判断主机是否为目标主机（完全相等或其点后缀子域）。
 
+        与 ``matches`` 使用完全相同的归一化与子域规则：
         畸形 URL（解析异常 / 无主机 / 相对路径）一律返回 False，绝不抛出。
         """
         try:
             parts = urlsplit(url)
-            host = parts.hostname
         except ValueError:
             return False
+        host = parts.hostname
         if not host:
             return False
-        if not any(host == h or host.endswith("." + h) for h in self._hosts):
+        return any(host == h or host.endswith("." + h) for h in self._hosts)
+
+    def matches(self, url: str) -> bool:
+        """主机命中（完全相等或点后缀子域）且路径命中任一前缀时为 True。
+
+        主机判定复用 ``host_matches``；畸形 URL 一律返回 False，绝不抛出。
+        """
+        if not self.host_matches(url):
             return False
         if not self._path_prefixes:
             return True
-        path = parts.path or "/"
+        # 上方 host_matches 已确认 URL 可解析，这里直接取路径
+        path = urlsplit(url).path or "/"
         for prefix in self._path_prefixes:
             # 前缀边界：全等或后随 "/"，避免 /zenx 误配 /zen
             if prefix == "/" or path == prefix or path.startswith(prefix + "/"):
@@ -323,20 +332,26 @@ class InjectionEngine:
     def inject_request(self, request: object) -> None:
         """向 ``request`` 注入会话头；任何异常只记 error 日志，绝不抛出。
 
-        跳过条件（按 ``log_skip`` 记 skip 日志）：插件禁用、端点不匹配。
+        跳过条件：插件禁用、端点不匹配。跳过日志按 ``log_skip`` 输出，
+        且仅当请求主机命中 ``target_hosts`` 时才会记录（``host_matches``），
+        其它主机的请求静默跳过，避免全进程 httpx 请求刷屏。
         会话来源：优先 ``CURRENT_SESSION``（来源标签 ``conversation``），
         否则交给 ``SessionResolver`` 兜底（``fixed`` / ``random``）。
         """
         url = ""
         try:
             url = str(getattr(request, "url", "") or "")
+            # 主机命中一次性判定，供下方两处跳过日志做门控（R5）
+            host_hit = self.matcher.host_matches(url)
 
             if not self.enable:
-                self._log_skip("插件已禁用", url)
+                if host_hit:
+                    self._log_skip("插件已禁用", url)
                 return
 
             if not self.matcher.matches(url):
-                self._log_skip("端点不匹配", url)
+                if host_hit:
+                    self._log_skip("端点不匹配", url)
                 return
 
             session = CURRENT_SESSION.get()
@@ -378,7 +393,7 @@ class InjectionEngine:
             pass
 
     def _log_skip(self, reason: str, url: str) -> None:
-        """按 ``log_skip`` 开关记录跳过原因。"""
+        """按 ``log_skip`` 开关记录跳过原因；调用方负责只对目标主机调用。"""
         if self._log_skip_enabled:
             self._log("info", f"已跳过注入：{reason} (url={url})")
 

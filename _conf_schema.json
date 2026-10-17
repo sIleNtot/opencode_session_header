@@ -55,13 +55,13 @@
   "log_injection": {
     "description": "记录注入成功日志",
     "type": "bool",
-    "hint": "导入请求头成功后输出一条 INFO 日志（含会话值、来源与 URL），便于排查 400 MissingSessionID 类问题。",
+    "hint": "注入请求头成功后输出一条 INFO 日志（含会话值、来源与 URL），便于排查 400 MissingSessionID 类问题。",
     "default": true
   },
   "log_skip": {
     "description": "记录跳过注入日志",
     "type": "bool",
-    "hint": "插件禁用或端点不匹配时输出一条 INFO 日志说明原因；请求频繁时可关闭以减少日志量。",
+    "hint": "仅当请求命中目标主机（target_hosts）但未注入时输出一条 INFO 日志说明原因（插件已禁用或端点不匹配）；其它主机的请求不产生日志，请求频繁时可关闭以减少日志量。",
     "default": true
   }
 }
