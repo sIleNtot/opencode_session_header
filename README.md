@@ -130,7 +130,7 @@ CI（GitHub Actions）在 Python 3.12 上执行同样的 `ruff check .`。
 - **端点范围**：上游只匹配单一端点 `https://opencode.ai/zen/go/v1`；本插件改为「主机 + 路径前缀」匹配，默认覆盖 `opencode.ai` 下 `/zen`、`/inference` 的全部端点及子域；
 - **会话 ID**：上游为 UUID v4 形态；本插件改为对齐 OpenCode Desktop 的 `ses_` + 32 位十六进制格式；
 - **镜像头**：上游只写一个会话头；本插件默认附加 Desktop 同款镜像头集；
-- **代码结构**：新增零 AstrBot 依赖的 `core.py`（端点匹配、会话推导、注入引擎、传输钩子均可独立测试），`main.py` 收敛为薄胶水层；
+- **代码结构**：新增零 AstrBot 依赖的 `core.py`（端点匹配、会话推导、注入引擎、传输钩子），`main.py` 收敛为薄胶水层；
 - **配置项**：移除 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid`，改为 `target_hosts`、`target_path_prefixes`、`fixed_session_id` 等九项（见配置表）；
 - **CI**：新增 GitHub Actions 工作流（ruff 静态检查）。
 

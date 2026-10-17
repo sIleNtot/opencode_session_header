@@ -1,9 +1,6 @@
-# Python 缓存与测试产物
+# Python 缓存
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.coverage
-coverage.xml
 
 # 本地环境与编辑器
 .venv/
