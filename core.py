@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 # ---------------------------------------------------------------------------
@@ -41,6 +41,9 @@ CURRENT_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 
 # 日志函数签名：level 取值 "info" | "warning" | "error" | "debug"
 LoggerFn = Callable[[str, str], None]
+
+# 插件所有日志统一前缀，便于在 AstrBot 日志中检索本插件输出
+LOG_PREFIX = "[opencode_session_header]"
 
 
 # ---------------------------------------------------------------------------
@@ -249,3 +252,128 @@ class SessionResolver:
         if self._fixed_session:
             return self._fixed_session, "fixed"
         return self._random_session, "random"
+
+
+# ---------------------------------------------------------------------------
+# 请求头注入：头计划与容错注入引擎
+# ---------------------------------------------------------------------------
+def plan_header_injection(
+    current: Mapping[str, str],
+    *,
+    header_name: str,
+    session: str,
+    mirror: bool,
+) -> dict[str, str]:
+    """计算本次请求需要写入的请求头（纯函数，不修改 ``current``）。
+
+    - 主头 ``header_name`` 缺失或为空 → 写入 ``session``；已有非空值 → 保留；
+    - 已有非空主头的实际值（去首尾空白）作为「有效会话值」，用于填充镜像头，
+      保证各镜像头与主头一致，不覆盖任何已存在的非空镜像头；
+    - ``mirror=True`` 时按 ``MIRROR_HEADERS`` 补全镜像头：固定值项写固定值，
+      ``None`` 项写有效会话值；与主头同名（大小写不敏感）的镜像项跳过。
+    """
+    existing = current.get(header_name)
+    existing_ok = isinstance(existing, str) and existing.strip() != ""
+    effective = existing.strip() if existing_ok else session
+
+    to_set: dict[str, str] = {}
+    if not existing_ok:
+        to_set[header_name] = session
+
+    if mirror:
+        lowered = header_name.lower()
+        for name, fixed in MIRROR_HEADERS:
+            if name.lower() == lowered:
+                continue
+            value = current.get(name)
+            if isinstance(value, str) and value.strip() != "":
+                continue
+            to_set[name] = fixed if fixed is not None else effective
+    return to_set
+
+
+class InjectionEngine:
+    """按端点匹配容错注入会话头：失败只记日志，绝不抛出、不覆盖已有值。"""
+
+    def __init__(
+        self,
+        *,
+        enable: bool,
+        matcher: EndpointMatcher,
+        resolver: SessionResolver,
+        header_name: str = DEFAULT_HEADER_NAME,
+        mirror: bool = True,
+        log_injection: bool = True,
+        log_skip: bool = True,
+        logger: LoggerFn | None = None,
+    ):
+        self.enable = enable
+        self.matcher = matcher
+        self.resolver = resolver
+        self.header_name = header_name
+        self.mirror = mirror
+        self._log_injection_enabled = log_injection
+        self._log_skip_enabled = log_skip
+        self._logger = logger
+
+    def inject_request(self, request: object) -> None:
+        """向 ``request`` 注入会话头；任何异常只记 error 日志，绝不抛出。
+
+        跳过条件（按 ``log_skip`` 记 skip 日志）：插件禁用、端点不匹配。
+        会话来源：优先 ``CURRENT_SESSION``（来源标签 ``conversation``），
+        否则交给 ``SessionResolver`` 兜底（``fixed`` / ``random``）。
+        """
+        url = ""
+        try:
+            url = str(getattr(request, "url", "") or "")
+
+            if not self.enable:
+                self._log_skip("插件已禁用", url)
+                return
+
+            if not self.matcher.matches(url):
+                self._log_skip("端点不匹配", url)
+                return
+
+            session = CURRENT_SESSION.get()
+            if session:
+                origin = "conversation"
+            else:
+                session, origin = self.resolver.resolve(None)
+
+            to_set = plan_header_injection(
+                request.headers,
+                header_name=self.header_name,
+                session=session,
+                mirror=self.mirror,
+            )
+            for name, value in to_set.items():
+                request.headers[name] = value
+
+            if self._log_injection_enabled:
+                value = request.headers.get(self.header_name, session)
+                if isinstance(value, str):
+                    value = value.strip()
+                self._log(
+                    "info",
+                    f"已注入 {self.header_name}={value} (来源={origin}, url={url})",
+                )
+        except Exception as exc:  # noqa: BLE001 - 注入路径吞掉一切异常，只记日志
+            self._log(
+                "error",
+                f"注入失败，已忽略：{type(exc).__name__}: {exc} (url={url})",
+            )
+
+    def _log(self, level: str, message: str) -> None:
+        """带统一前缀输出日志；``logger`` 为空或日志自身失败时静默跳过。"""
+        if self._logger is None:
+            return
+        try:
+            self._logger(level, f"{LOG_PREFIX} {message}")
+        except Exception:  # noqa: BLE001, S110 - 日志失败也绝不能影响注入流程
+            pass
+
+    def _log_skip(self, reason: str, url: str) -> None:
+        """按 ``log_skip`` 开关记录跳过原因。"""
+        if self._log_skip_enabled:
+            self._log("info", f"已跳过注入：{reason} (url={url})")
