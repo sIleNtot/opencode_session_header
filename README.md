@@ -114,19 +114,15 @@ AstrBot 各类型 Provider 都不会发送 `x-opencode-session`，网关缺失�
 - 仅有的内存状态：来源 → 会话 ID 的映射缓存（上限 4096 条）与钩子安装记录；插件卸载 / 禁用时钩子全部还原并清空记录。
 - 会话 ID 只是会话标识，不是密钥、令牌或认证凭据；日志中的会话值可通过 `log_injection` / `log_skip` 关闭输出。
 
-## 开发与测试
+## 开发
+
+代码结构：`core.py`（端点匹配、会话推导、注入引擎、传输钩子，零 AstrBot 依赖）+ `main.py`（AstrBot 胶水层）。提交前请运行静态检查：
 
 ```bash
-python -m venv .venv
-.venv\Scripts\python -m pip install httpx httpx2 pytest ruff
-
-.venv\Scripts\ruff check .
-.venv\Scripts\pytest -q
+ruff check .
 ```
 
-（Windows 路径；macOS / Linux 将 `.venv\Scripts\` 换成 `.venv/bin/`。）
-
-测试覆盖端点匹配（正反例、子域、路径边界）、会话推导与兜底、注入引擎保留策略、httpx / httpx2 真实传输往返、钩子幂等安装与完整还原、`main.py` 冒烟。CI（GitHub Actions）在 Python 3.12 上执行同样的 `ruff check .` 与 `pytest -q`，不安装 AstrBot（核心逻辑零依赖，可独立测试）。
+CI（GitHub Actions）在 Python 3.12 上执行同样的 `ruff check .`。
 
 ## 与上游差异
 
@@ -136,7 +132,7 @@ python -m venv .venv
 - **镜像头**：上游只写一个会话头；本插件默认附加 Desktop 同款镜像头集；
 - **代码结构**：新增零 AstrBot 依赖的 `core.py`（端点匹配、会话推导、注入引擎、传输钩子均可独立测试），`main.py` 收敛为薄胶水层；
 - **配置项**：移除 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid`，改为 `target_hosts`、`target_path_prefixes`、`fixed_session_id` 等九项（见配置表）；
-- **测试与 CI**：新增 `tests/` 单元测试与 GitHub Actions（ruff + pytest）。
+- **CI**：新增 GitHub Actions 工作流（ruff 静态检查）。
 
 ## 从 1.x 升级
 

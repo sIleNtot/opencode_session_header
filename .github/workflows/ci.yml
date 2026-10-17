@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,8 +13,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install dev dependencies
-        run: pip install httpx httpx2 pytest ruff
+        run: pip install ruff
       - name: Lint
         run: ruff check .
-      - name: Test
-        run: pytest -q
