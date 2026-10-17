@@ -1,55 +1,141 @@
 # OpenCode 会话请求头注入
 
-> 插件 ID：`astrbot_plugin_opencode_session_header`
+本插件为 AstrBot 提供 OpenCode 会话请求头注入能力：发往 OpenCode（Zen / Go）端点的 LLM 请求会被自动补上 `x-opencode-session` 会话头，从而正常调用 OpenCode Go 的全部模型；Anthropic、OpenAI、OpenAI Responses、Gemini 四类 Provider 与 `zen` / `inference` 全部端点默认全覆盖。
 
-为 OpenCode Zen / OpenCode Go 请求自动补充 `x-opencode-session` 请求头的 AstrBot 插件。
-
-- GitHub 仓库：[AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header)
-- 目标端点默认值：`https://opencode.ai/zen/go/v1`
-- 运行环境：AstrBot；无需额外安装第三方 Python 依赖
+> 本仓库为 Fork，重构自上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header)，当前实现与上游已完全不同（差异见文末「与上游差异」）。本仓库地址：[sIleNtot/opencode_session_header](https://github.com/sIleNtot/opencode_session_header)。
 
 ## 功能
 
-插件只处理目标端点的 HTTP 请求，不读取或改写提示词、聊天内容及模型参数。
+OpenCode 网关要求每个请求携带稳定且可见的 `x-opencode-session` 会话头，缺失时直接返回 `400 MissingSessionID`，而 AstrBot 自身不会发送该头。本插件在 httpx / httpx2 传输层统一拦截请求：只要最终 URL 指向 OpenCode 端点，无论请求来自哪种 Provider、经由哪种底层 SDK，都会被自动补上会话头。
 
-1. 如果请求已经携带非空的 `x-opencode-session`，保留已有值，不覆盖。
-2. 如果能取得 AstrBot 会话 ID（优先 `unified_msg_origin`，其次请求的 `session_id`），根据会话 ID 稳定推导 UUID。相同会话在重启后仍得到相同值。
-3. 如果请求上下文没有会话 ID，按“缺失会话兜底方式”生成请求头，避免因缺少会话上下文而跳过注入。
-4. 仅当请求的协议、主机和路径属于配置的目标端点时生效。目标路径下的接口路径（如 `/chat/completions`）也会匹配；其他 API 地址保持不变。
-5. 管理员可使用 `/oc-session` 查看当前会话对应的 UUID 和端点匹配情况。
+| Provider 类型 | 是否支持 | 底层 SDK |
+| --- | --- | --- |
+| Anthropic Compatible | ✅ 全部支持 | `anthropic` |
+| OpenAI Compatible | ✅ 全部支持 | `openai` |
+| OpenAI Responses | ✅ 全部支持 | `openai` |
+| Gemini Compatible | ✅ 全部支持 | `google-genai` |
+
+匹配依据是**最终请求 URL**（主机 + 路径前缀），而不是 Provider 类型，因此四类 Provider 对应的四种 API 形态由同一套逻辑覆盖：
+
+- Anthropic Messages：`/v1/messages`；
+- OpenAI Chat Completions：`/v1/chat/completions`；
+- OpenAI Responses：`/v1/responses`；
+- Gemini `generateContent`：`/v1beta/models/<模型>:generateContent`。
+
+不变式（任何情况下都成立）：
+
+- **已有非空会话头绝不覆盖**：请求若已携带（例如你自己在 Provider 的 `custom_headers` 中配过），原值优先，镜像头也会与之一致；
+- **非目标端点零影响**：OpenAI、DeepSeek、Ollama 等其它 API 的请求原样抵达，不产生任何副作用；
+- **UA 不改写**：保留 AstrBot 自身的 `astrbot/<版本>`，不伪造 OpenCode 客户端身份；
+- **全量容错**：注入路径中的任何异常只记日志，绝不抛出，绝不影响请求本身。
 
 ## 安装
 
-将整个插件目录放入 AstrBot 的 `data/plugins/astrbot_plugin_opencode_session_header`，然后在 AstrBot 中启用插件并重载插件或重启 AstrBot。也可以通过 AstrBot 的插件管理功能从本仓库安装。
+1. **插件市场**：在 AstrBot 插件市场搜索「OpenCode 会话请求头注入」安装；
+2. **手动安装**：将本仓库整个目录放入 AstrBot 的 `data/plugins/astrbot_plugin_opencode_session_header`；
+3. 重载插件或重启 AstrBot。
 
-## 插件设置
+运行时无需额外安装第三方 Python 依赖：`httpx`、`httpx2`、`openai`、`anthropic`、`google-genai` 均由 AstrBot 环境自带。
 
-| 设置项 | 默认值 | 说明 |
-| --- | --- | --- |
-| `enable` | `true` | 插件总开关。 |
-| `target_endpoint` | `https://opencode.ai/zen/go/v1` | 注入请求头所针对的 API 基础端点。 |
-| `header_name` | `x-opencode-session` | 请求头名称。 |
-| `ignore_trailing_slash` | `true` | 端点匹配时是否忽略末尾的 `/`。 |
-| `missing_session_mode` | `random` | 缺少会话 ID 时选择 `random` 或 `fixed`。 |
-| `fixed_session_uuid` | 空 | `fixed` 模式使用的 UUID；须为有效 UUID。 |
-| `log_injection` | `true` | 是否记录请求头注入日志。 |
-| `log_skip` | `true` | 是否记录跳过或保留已有请求头的日志。 |
+## 快速配置
 
-### 缺失会话时的模式
+在 AstrBot 中新建或修改 Provider 时，按模型对应的 API 形态填写：
 
-- **`random`**：插件加载时生成一个随机 UUID，并在当前插件运行期间复用；重启或重载插件后会生成新的值。这避免无会话上下文的连续请求每次都使用不同的 Session。
-- **`fixed`**：使用 `fixed_session_uuid` 中填写的 UUID，适合需要跨重启保持同一个兜底 Session 的场景。
-- 若选择 `fixed`，但 UUID 留空或格式无效，插件会记录警告并退回 `random` 模式。
+| Provider 类型 | 示例 API 地址（填写值） | 最终请求路径 |
+|---|---|---|
+| Anthropic Compatible | `https://opencode.ai/zen/go` | `/zen/go/v1/messages` |
+| OpenAI Compatible | `https://opencode.ai/zen/go/v1` | `/zen/go/v1/chat/completions` |
+| OpenAI Responses | `https://opencode.ai/zen/go/v1` | `/zen/go/v1/responses` |
+| Gemini Compatible | `https://opencode.ai/inference/go/google` | `/inference/go/google/v1beta/models/...` |
+| Anthropic（直连端点） | `https://opencode.ai/inference/go/anthropic` | `/inference/go/anthropic/v1/messages` |
+| OpenAI（直连端点） | `https://opencode.ai/inference/go/openai/v1` | `/inference/go/openai/v1/...` |
 
-有正常的 AstrBot 会话 ID 时，仍使用原有的会话 ID 确定性映射，不受兜底设置影响。设置变更后请重载插件或重启 AstrBot。
+表中的示例地址全部落在默认匹配规则（主机 `opencode.ai` 及其点后缀子域，路径前缀 `/zen`、`/inference`）之内，装好插件后无需任何额外配置即可工作。
 
-## 日志与隐私
+## 配置表
 
-插件自身不发起网络请求；实际模型请求仍由 AstrBot 和配置的模型提供商发出。注入日志可能包含 Session UUID 和端点信息，可通过 `log_injection`、`log_skip` 及 AstrBot 全局日志级别控制日志输出。UUID 是会话标识，不是认证凭据或秘密令牌。
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enable` | bool | `true` | 总开关；关闭后插件不修改任何请求，等同于未安装。 |
+| `target_hosts` | list | `["opencode.ai"]` | 目标主机列表；命中主机或其点后缀子域才会注入，也可整段填写 URL（其路径会一并作为匹配前缀）。 |
+| `target_path_prefixes` | list | `["/zen", "/inference"]` | 目标路径前缀；按段匹配（`/zen` 不匹配 `/zenx`），空列表 = 任意路径。 |
+| `header_name` | string | `x-opencode-session` | 注入的主请求头名；留空或含不可见字符时回退默认值。 |
+| `mirror_opencode_headers` | bool | `true` | 是否附加 OpenCode Desktop 同款镜像头（`x-opencode-session-id`、`x-session-affinity`、`X-Session-Id`、`x-opencode-client: astrbot`）；已存在的非空头不覆盖。 |
+| `missing_session_mode` | string | `random` | 缺少会话上下文时的兜底方式：`random` 或 `fixed`；取值非法自动降级 `random`。 |
+| `fixed_session_id` | string | `""` | `fixed` 模式使用的固定会话值，仅允许可见 ASCII；留空或非法自动降级 `random`。 |
+| `log_injection` | bool | `true` | 注入成功时记录一条 INFO 日志。 |
+| `log_skip` | bool | `true` | 跳过注入（禁用或不匹配）时记录一条 INFO 日志；请求频繁时可关闭以减少日志量。 |
 
-## 仓库内容
+关于兜底语义：只要存在对话上下文（如 `req.conversation.cid`），会话 ID 永远按上下文确定性推导，兜底配置不参与。`random` 会在插件加载时生成一个 `ses_` 随机会话，并在本次进程内复用（重启或重载后更换）；`fixed` 则使用 `fixed_session_id` 的值，适合希望兜底会话跨重启保持不变的场景。修改配置后重载插件即可生效。
 
-- `main.py`：插件实现
-- `_conf_schema.json`：AstrBot 插件设置定义
-- `metadata.yaml`：插件元数据
-- `README.md`：使用说明
+## 会话 ID 设计
+
+- **格式**：`ses_` + 32 位小写十六进制，对齐 OpenCode Desktop 的会话 ID 约定；每个 AstrBot 对话恒定、跨重启稳定，对话重置（新 cid）即自动换新。
+- **推导**：优先取 `req.conversation.cid`（AstrBot 对话 UUID），取不到时依次回退 `unified_msg_origin` 与 `req.session_id`。来源是合法 UUID 时直接取其去连字符的十六进制（`550e8400-e29b-41d4-a716-446655440000` → `ses_550e8400e29b41d4a716446655440000`）；其它来源字符串取 sha256 前 32 位十六进制，同样稳定可复现。
+- **与 OpenCode Desktop 的对应关系**：Desktop 同样以 `ses_` 开头的会话 ID 标识会话；本插件生成的值与其同格式、同语义（对每个会话稳定、仅可见 ASCII），网关据此完成路由与提示缓存。
+- **不覆盖用户自配值**：请求已带非空 `x-opencode-session` 时以原值为准，镜像头集也与该值保持一致，不会出现头与头不一致。
+- **镜像头集**（`mirror_opencode_headers = true` 时）：`x-opencode-session-id`、`x-session-affinity`、`X-Session-Id` 取值与主头一致；`x-opencode-client` 固定为 `astrbot`；已由调用方设置的非空镜像头不覆盖。
+- **缓存**：来源 → 会话 ID 的纯函数结果在进程内缓存（上限 4096 条），仅内存、不落盘。
+
+## 命令
+
+`/oc-session`（仅管理员）：查看当前会话的注入状态 —— 会话来源与来源值、将使用的主头值、匹配规则、启用状态与已挂载的传输钩子。
+
+```text
+会话来源：对话上下文
+来源值：550e8400-e29b-41d4-a716-446655440000
+x-opencode-session: ses_550e8400e29b41d4a716446655440000
+匹配规则：opencode.ai | /zen, /inference
+启用状态：已启用；传输钩子：httpx.AsyncClient.send, openai._base_client.httpx2.AsyncClient.send, ...
+```
+
+## FAQ
+
+**Q：使用 OpenCode Go 时一直报 `400 MissingSessionID`？**
+
+该错误表示请求缺少网关强制要求的会话头。排查顺序：
+
+1. 用 `/oc-session` 查看「启用状态」与「匹配规则」，确认插件已加载、URL 确实命中；
+2. 开启 `log_injection` / `log_skip`，从日志里确认真实请求 URL —— 只要它位于 `opencode.ai` 下的 `/zen` 或 `/inference` 路径，就应能看到注入日志；
+3. 若你曾在 Provider 的 `custom_headers` 中配过不合法（空值、含空格等）的 `x-opencode-session`，它会优先于插件推导值 —— 清空自配值即可让插件接管。
+
+**Q：为什么必须装这个插件？**
+
+AstrBot 各类型 Provider 都不会发送 `x-opencode-session`，网关缺失即 400，不装插件无法使用；而只 hook OpenAI SDK 的旧方案对 Anthropic / Gemini 类型 Provider 与 `inference` 直连端点无能为力，本插件对这些场景同样生效。
+
+**Q：低版本 AstrBot 会被拒绝或降级不可用吗？**
+
+不会拒绝：本插件不声明最低版本，所有可选属性（如 `req.conversation`、`unified_msg_origin`、内部调度器）均按存在性探测，缺失时逐级降级 —— 例如读不到对话 cid 就回退 umo；调度器兜底钩子装不上只记一条警告，不影响加载；传输钩子按运行时模块发现，缺哪个模块就跳过哪个。旧版 AstrBot 上同样能工作，只是可用的兜底路径更少。
+
+## 隐私
+
+- 不发起任何额外网络请求；真实的模型请求仍由 AstrBot 与所配置的 Provider 发出。
+- 不收集、不上传、不落盘任何用户数据；聊天内容与模型参数完全不经本插件处理。
+- 仅有的内存状态：来源 → 会话 ID 的映射缓存（上限 4096 条）与钩子安装记录；插件卸载 / 禁用时钩子全部还原并清空记录。
+- 会话 ID 只是会话标识，不是密钥、令牌或认证凭据；日志中的会话值可通过 `log_injection` / `log_skip` 关闭输出。
+
+## 开发与测试
+
+```bash
+python -m venv .venv
+.venv\Scripts\python -m pip install httpx httpx2 pytest ruff
+
+.venv\Scripts\ruff check .
+.venv\Scripts\pytest -q
+```
+
+（Windows 路径；macOS / Linux 将 `.venv\Scripts\` 换成 `.venv/bin/`。）
+
+测试覆盖端点匹配（正反例、子域、路径边界）、会话推导与兜底、注入引擎保留策略、httpx / httpx2 真实传输往返、钩子幂等安装与完整还原、`main.py` 冒烟。CI（GitHub Actions）在 Python 3.12 上执行同样的 `ruff check .` 与 `pytest -q`，不安装 AstrBot（核心逻辑零依赖，可独立测试）。
+
+## 与上游差异
+
+- **拦截方式**：上游 hook OpenAI SDK 内部实现（`_prepare_request` 等），本插件改在 httpx / httpx2 传输层统一拦截，覆盖全部 SDK 与四类 Provider；
+- **端点范围**：上游只匹配单一端点 `https://opencode.ai/zen/go/v1`；本插件改为「主机 + 路径前缀」匹配，默认覆盖 `opencode.ai` 下 `/zen`、`/inference` 的全部端点及子域；
+- **会话 ID**：上游为 UUID v4 形态；本插件改为对齐 OpenCode Desktop 的 `ses_` + 32 位十六进制格式；
+- **镜像头**：上游只写一个会话头；本插件默认附加 Desktop 同款镜像头集；
+- **代码结构**：新增零 AstrBot 依赖的 `core.py`（端点匹配、会话推导、注入引擎、传输钩子均可独立测试），`main.py` 收敛为薄胶水层；
+- **配置项**：移除 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid`，改为 `target_hosts`、`target_path_prefixes`、`fixed_session_id` 等九项（见配置表）；
+- **测试与 CI**：新增 `tests/` 单元测试与 GitHub Actions（ruff + pytest）。
+
+致谢：本插件基于上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header) 重构而来，感谢原作者的开拓工作。
