@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
+import uuid
 from collections.abc import Callable, Iterable
 from urllib.parse import urlsplit
 
@@ -172,3 +174,78 @@ class EndpointMatcher:
         hosts_text = ", ".join(self._hosts)
         prefixes_text = ", ".join(self._path_prefixes) if self._path_prefixes else "任意路径"
         return f"{hosts_text} | {prefixes_text}"
+
+
+# ---------------------------------------------------------------------------
+# 会话 ID 推导与兜底解析
+# ---------------------------------------------------------------------------
+def is_visible_ascii(value: str) -> bool:
+    """非空且所有字符都是可见 ASCII（``0x21``–``0x7E``，不含空格与 CRLF）。"""
+    return bool(value) and all(0x21 <= ord(ch) <= 0x7E for ch in value)
+
+
+def sanitize_session_value(value: object) -> str | None:
+    """把配置值清洗为合法会话值：None / 含不可见字符 / 空串一律返回 None。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if is_visible_ascii(text) else None
+
+
+def derive_session_id(source: str) -> str:
+    """由会话来源推导 ``ses_`` 会话 ID。
+
+    - 合法 UUID（含去连字符、大写形式）→ ``ses_`` + 32 位小写十六进制；
+    - 其它任意字符串 → ``ses_`` + sha256 前 32 位十六进制，稳定可复现。
+    """
+    text = str(source).strip()
+    try:
+        parsed = uuid.UUID(text)
+    except ValueError:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return SESSION_PREFIX + digest[:32]
+    return SESSION_PREFIX + parsed.hex
+
+
+def new_random_session_id() -> str:
+    """生成随机会话 ID：``ses_`` + uuid4 的 32 位小写十六进制。"""
+    return SESSION_PREFIX + uuid.uuid4().hex
+
+
+class SessionResolver:
+    """会话 ID 兜底解析器：会话来源 > 固定会话 > 随机会话。
+
+    - 传入非空 ``source`` 时按 ``derive_session_id`` 推导并缓存（缓存上限
+      ``cache_max``，写满后不再新增，保证内存有界）；
+    - ``source`` 为空时返回构造时清洗过的固定会话（非法即视为未设置），
+      否则返回随机会话（``random_session=None`` 时构造即生成）。
+    """
+
+    def __init__(
+        self,
+        *,
+        fixed_session: str | None = None,
+        random_session: str | None = None,
+        cache_max: int = SESSION_CACHE_MAX,
+    ):
+        self._fixed_session = sanitize_session_value(fixed_session)
+        self._random_session = sanitize_session_value(random_session) or new_random_session_id()
+        self._cache_max = cache_max
+        self._cache: dict[str, str] = {}
+
+    def resolve(self, source: str | None) -> tuple[str, str]:
+        """解析本次请求的会话 ID，返回 ``(会话 ID, 来源标签)``。
+
+        标签取值：``"conversation"``（由来源推导）/ ``"fixed"`` / ``"random"``。
+        """
+        text = source.strip() if source else ""
+        if text:
+            cached = self._cache.get(text)
+            if cached is None:
+                cached = derive_session_id(text)
+                if len(self._cache) < self._cache_max:
+                    self._cache[text] = cached
+            return cached, "conversation"
+        if self._fixed_session:
+            return self._fixed_session, "fixed"
+        return self._random_session, "random"
