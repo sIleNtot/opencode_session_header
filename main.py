@@ -1,10 +1,14 @@
-"""AstrBot 插件：为发往 OpenCode 端点的 LLM 请求注入会话请求头（薄胶水层）。
+"""AstrBot 插件：OpenCode 请求头（会话头注入与 Anthropic 认证兼容）。
 
 本插件在 httpx / httpx2 传输层统一拦截请求：只对命中 ``target_hosts`` +
 ``target_path_prefixes`` 的 URL 注入主头 ``x-opencode-session``，并可按需附加
 OpenCode Desktop 同款镜像头（``x-opencode-session-id`` / ``x-session-affinity``
 / ``X-Session-Id`` / ``x-opencode-client``）；已存在的非空会话头不会被覆盖，
 ``User-Agent`` 与 ``x-astrbot-conversation-id`` 不受影响。
+
+对 OpenCode 的 Anthropic Messages 端点，若请求只带 ``Authorization: Bearer``
+而缺少 ``x-api-key``（Anthropic SDK 2.3+ 的默认行为），插件会补一个同值
+``x-api-key``；不覆盖已有值，不记录凭据。
 
 会话 ID 与 AstrBot 对话绑定：按 ``req.conversation.cid`` → 事件来源
 ``unified_msg_origin`` → ``req.session_id`` 的优先级解析来源，确定性推导为

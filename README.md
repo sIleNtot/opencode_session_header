@@ -1,8 +1,14 @@
-# OpenCode 会话请求头注入
+# OpenCode 请求头
 
-本插件为 AstrBot 提供 OpenCode 会话请求头注入能力：发往 OpenCode（Zen / Go）端点的 LLM 请求会被自动补上 `x-opencode-session` 会话头，从而正常调用 OpenCode Go 的全部模型；Anthropic、OpenAI、OpenAI Responses、Gemini 四类 Provider 与 `zen` / `inference` 全部端点默认全覆盖。
+本项目为 AstrBot 提供 OpenCode 请求头处理能力：发往 OpenCode（Zen / Go）端点的 LLM 请求会被自动补上 `x-opencode-session` 会话头，从而正常调用 OpenCode Go 的全部模型；Anthropic、OpenAI、OpenAI Responses、Gemini 四类 Provider 与 `zen` / `inference` 全部端点默认全覆盖。同时兼容新版 Anthropic SDK 的 Bearer 认证（自动补齐 `x-api-key`）。
 
-> 本仓库为 Fork，重构自上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header)，当前实现与上游已完全不同（差异见文末「与上游差异」）。本仓库地址：[sIleNtot/opencode_session_header](https://github.com/sIleNtot/opencode_session_header)。
+> 项目地址：[sIleNtot/opencode_session_header](https://github.com/sIleNtot/opencode_session_header)
+
+## v2.0.0 更新
+
+- 项目与插件展示名称统一为 **OpenCode 请求头**；内部 ID 保持 `opencode_session_header`，以兼容已有配置与安装目录。
+- 新增 Anthropic 认证兼容：Anthropic SDK 2.3.0 起会把 `api_key` 转换为 `Authorization: Bearer`，而 OpenCode 的 Anthropic Messages 端点（`/zen/go/v1/messages`、`/inference/.../v1/messages`）只接受 `x-api-key`，因此会出现 `401 Go requires a credential`。本插件会在请求命中上述 OpenCode 端点、已有 Bearer 且缺少 `x-api-key` 时，把 Bearer 值自动复制为 `x-api-key`；不覆盖已有值，不记录凭据。OpenAI Compatible / Responses / Gemini 端点不受影响。
+- 该兼容只作用于发往 OpenCode 端点的请求，不会修改其它 Provider 的认证头。
 
 ## 功能
 
@@ -27,11 +33,12 @@ OpenCode 网关要求每个请求携带稳定且可见的 `x-opencode-session` �
 - **已有非空会话头绝不覆盖**：请求若已携带（例如你自己在 Provider 的 `custom_headers` 中配过），原值优先，插件填充的镜像头也会与之一致（你已自设的非空镜像头除外，见「会话 ID 设计」）；
 - **非目标端点零影响**：OpenAI、DeepSeek、Ollama 等其它 API 的请求原样抵达，不产生任何副作用；
 - **UA 不改写**：保留 AstrBot 自身的 `astrbot/<版本>`，不伪造 OpenCode 客户端身份；
+- **Anthropic 认证兼容**：OpenCode 的 Anthropic Messages 端点（`/zen/go/v1/messages`、`/inference/.../v1/messages`）只认 `x-api-key`；新版 Anthropic SDK（如 2.3.0）默认只发 `Authorization: Bearer`。请求缺少 `x-api-key` 时，插件会把 Bearer 值复制为 `x-api-key`，不覆盖已有值，不记录凭据；
 - **全量容错**：注入路径中的任何异常只记日志，绝不抛出，绝不影响请求本身。
 
 ## 安装
 
-1. **插件市场**：在 AstrBot 插件市场搜索「OpenCode 会话请求头注入」安装；
+1. **插件市场**：在 AstrBot 插件市场搜索「OpenCode 请求头」安装；
 2. **手动安装**：将本仓库整个目录放入 AstrBot 的 `data/plugins/opencode_session_header`；
 3. 重载插件或重启 AstrBot。
 
@@ -99,6 +106,10 @@ x-opencode-session: ses_550e8400e29b41d4a716446655440000
 2. 开启 `log_injection` / `log_skip`，从日志里确认真实请求 URL —— 只要它位于 `opencode.ai` 下的 `/zen` 或 `/inference` 路径，就应能看到注入日志；
 3. 若你曾在 Provider 的 `custom_headers` 中配过非空的 `x-opencode-session`（例如从别处复制的、与当前会话不符的值），它会优先于插件推导值；空值或纯空白会被视为未设置，插件照常注入 —— 若自配值不正确，清空它即可让插件接管。
 
+**Q：使用 Anthropic Compatible 时仍报 `401 Go requires a credential`？**
+
+A：这是 Anthropic SDK 2.3+ 的认证头变化：它只发 `Authorization: Bearer`，而 OpenCode 的 Anthropic Messages 端点只认 `x-api-key`。本插件会自动把 Bearer 值补成 `x-api-key`（仅限 OpenCode 端点，且不覆盖已有值）。如果仍报错，请确认 Provider 的 API Key 是 OpenCode Go 的 `oc_sk_...` key、订阅有效，并检查代理是否改写了请求头；也可以把 Provider 改为 OpenAI Compatible + `https://opencode.ai/zen/go/v1` 作为替代方案。
+
 **Q：为什么必须装这个插件？**
 
 AstrBot 各类型 Provider 都不会发送 `x-opencode-session`，网关缺失即 400，不装插件无法使用；而只 hook OpenAI SDK 的旧方案对 Anthropic / Gemini 类型 Provider 与 `inference` 直连端点无能为力，本插件对这些场景同样生效。
@@ -113,6 +124,7 @@ AstrBot 各类型 Provider 都不会发送 `x-opencode-session`，网关缺失�
 - 不收集、不上传、不落盘任何用户数据；聊天内容与模型参数完全不经本插件处理。
 - 仅有的内存状态：来源 → 会话 ID 的映射缓存（上限 4096 条）与钩子安装记录；插件卸载 / 禁用时钩子全部还原并清空记录。
 - 会话 ID 只是会话标识，不是密钥、令牌或认证凭据；日志中的会话值可通过 `log_injection` / `log_skip` 关闭输出。
+- Anthropic 认证兼容只在内存中把 Bearer 值复制为 `x-api-key`，不落盘、不记录凭据。
 
 ## 开发
 
@@ -124,20 +136,4 @@ ruff check .
 
 CI（GitHub Actions）在 Python 3.12 上执行同样的 `ruff check .`。
 
-## 与上游差异
-
-- **拦截方式**：上游 hook OpenAI SDK 内部实现（`_prepare_request` 等），本插件改在 httpx / httpx2 传输层统一拦截，覆盖全部 SDK 与四类 Provider；
-- **端点范围**：上游只匹配单一端点 `https://opencode.ai/zen/go/v1`；本插件改为「主机 + 路径前缀」匹配，默认覆盖 `opencode.ai` 下 `/zen`、`/inference` 的全部端点及子域；
-- **会话 ID**：上游为 UUID v4 形态；本插件改为对齐 OpenCode Desktop 的 `ses_` + 32 位十六进制格式；
-- **镜像头**：上游只写一个会话头；本插件默认附加 Desktop 同款镜像头集；
-- **代码结构**：新增零 AstrBot 依赖的 `core.py`（端点匹配、会话推导、注入引擎、传输钩子），`main.py` 收敛为薄胶水层；
-- **配置项**：移除 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid`，改为 `target_hosts`、`target_path_prefixes`、`fixed_session_id` 等九项（见配置表）；
-- **CI**：新增 GitHub Actions 工作流（ruff 静态检查）。
-
-## 从上游原版插件迁移
-
-上游原版（1.x）的配置键 `target_endpoint`、`ignore_trailing_slash`、`fixed_session_uuid` 在本插件中不再读取（旧键会留在配置文件中但被忽略），请按「配置表」更新：`target_endpoint` + `ignore_trailing_slash` 改用 `target_hosts` + `target_path_prefixes` 表达（默认值即覆盖原单端点，通常无需额外配置）；`fixed_session_uuid` 请把固定值迁移到 `fixed_session_id`。
-
-只配置过 `fixed_session_uuid` 的用户 `fixed_session_id` 为空，固定兜底会话不再生效：若 `missing_session_mode` 仍为 `fixed`，插件加载时会输出「fixed_session_id 为空或含不可见字符，已降级为 random」警告并回退随机兜底（每次重启更换会话值）；请务必更新配置。
-
-致谢：本插件基于上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header) 重构而来，感谢原作者的开拓工作。
+致谢：本项目最初基于上游 [AnzioNiko/astrbot_plugin_opencode_session_header](https://github.com/AnzioNiko/astrbot_plugin_opencode_session_header) 发展而来，感谢原作者的开拓工作。

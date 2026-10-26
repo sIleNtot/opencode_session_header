@@ -1,4 +1,4 @@
-"""零 AstrBot 依赖的核心逻辑：端点匹配、配置工具与会话头注入基础设施。"""
+"""零 AstrBot 依赖的核心逻辑：端点匹配、配置工具与会话头 / 认证头注入基础设施。"""
 
 from __future__ import annotations
 
@@ -305,8 +305,20 @@ def plan_header_injection(
     return to_set
 
 
+def _get_header(headers: Mapping[str, str], name: str) -> str | None:
+    """大小写不敏感地读取请求头；兼容 ``httpx.Headers`` 与普通 dict。"""
+    value = headers.get(name)
+    if isinstance(value, str):
+        return value
+    lowered = name.lower()
+    for key, candidate in headers.items():
+        if str(key).lower() == lowered and isinstance(candidate, str):
+            return candidate
+    return None
+
+
 class InjectionEngine:
-    """按端点匹配容错注入会话头：失败只记日志，绝不抛出、不覆盖已有值。"""
+    """按端点匹配容错注入会话头与 Anthropic 认证兼容头：失败只记日志，绝不抛出、不覆盖已有值。"""
 
     def __init__(
         self,
@@ -354,6 +366,10 @@ class InjectionEngine:
                     self._log_skip("端点不匹配", url)
                 return
 
+            # Anthropic SDK 2.3+ 只发 Authorization: Bearer，而 OpenCode 的
+            # Anthropic Messages 端点要求 x-api-key；补一个同值头，不覆盖已有值。
+            self._ensure_anthropic_api_key(request)
+
             session = CURRENT_SESSION.get()
             if session:
                 origin = "conversation"
@@ -382,6 +398,30 @@ class InjectionEngine:
                 "error",
                 f"注入失败，已忽略：{type(exc).__name__}: {exc} (url={url})",
             )
+
+    @staticmethod
+    def _ensure_anthropic_api_key(request: object) -> None:
+        """为 OpenCode 的 Anthropic Messages 端点补齐 ``x-api-key``。
+
+        新版 Anthropic SDK（如 2.3.0）默认发送 ``Authorization: Bearer``，
+        而 OpenCode 该端点只认 ``x-api-key``，缺失时网关返回
+        ``401 Go requires a credential``。仅在请求已带 Bearer 且没有
+        ``x-api-key`` 时复制同值头；不覆盖已有值，也不记录凭据。
+        """
+        path = urlsplit(str(getattr(request, "url", "") or "")).path or "/"
+        if path != "/v1/messages" and not path.endswith("/v1/messages"):
+            return
+        headers = request.headers
+        if _get_header(headers, "x-api-key"):
+            return
+        authorization = _get_header(headers, "authorization")
+        if not isinstance(authorization, str):
+            return
+        scheme, _, token = authorization.partition(" ")
+        token = token.strip()
+        if scheme.lower() != "bearer" or not token:
+            return
+        headers["x-api-key"] = token
 
     def _log(self, level: str, message: str) -> None:
         """带统一前缀输出日志；``logger`` 为空或日志自身失败时静默跳过。"""
